@@ -3,6 +3,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 import sys
+from datetime import datetime # <--- AGGIUNTA IMPORTANTE
 
 # --- CONFIGURAZIONE ---
 URL = "https://management.lum.it/bandi-e-avvisi/"
