@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import sys
 from datetime import datetime
+import pytz # <--- Libreria per i fusi orari
 
 # --- CONFIGURAZIONE ---
 URL = "https://management.lum.it/bandi-e-avvisi/"
@@ -83,8 +84,11 @@ def check_lum():
 
             print(f"🚀 NUOVO BANDO RILEVATO: {title}")
             
-            # DATA CORRETTA CALCOLATA IN PYTHON
-            now_str = datetime.now().strftime("%d/%m/%Y alle %H:%M")
+            # --- FIX FUSO ORARIO (ROME) ---
+            utc_now = datetime.now(pytz.utc) # Prende l'ora UTC del server
+            rome_tz = pytz.timezone('Europe/Rome') # Definisce il fuso orario di Roma
+            rome_now = utc_now.astimezone(rome_tz) # Converte
+            now_str = rome_now.strftime("%d/%m/%Y alle %H:%M")
             
             msg = (
                 f"🎯 <b>NUOVO BANDO LUM ATTIVO!</b>\n\n"
