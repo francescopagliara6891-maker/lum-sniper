@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import sys
 from datetime import datetime
-import pytz # <--- Libreria per i fusi orari
+import pytz 
 
 # --- CONFIGURAZIONE ---
 URL = "https://management.lum.it/bandi-e-avvisi/"
@@ -40,8 +40,9 @@ def load_history():
     return []
 
 def save_history(data):
+    # Salviamo i link attivi, rimuovendo potenziali duplicati
     with open(HISTORY_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+        json.dump(list(set(data)), f, indent=4)
 
 def check_lum():
     print(f"[*] Avvio scansione LUM Sniper su: {URL}")
@@ -62,21 +63,33 @@ def check_lum():
     print(f"[*] Trovati {len(active_tags)} bandi attivi totali.")
 
     for tag in active_tags:
-        card = tag.find_parent('div')
-        while card and len(card.get_text(strip=True)) < 20:
-            card = card.find_parent('div')
+        card = tag.parent
+        link_tag = None
+        levels = 0
+        
+        # IL MIRINO BLINDATO: Risale la pagina per 6 livelli fino a trovare il link
+        while card and levels < 6:
+            link_tag = card.find('a', href=True)
+            if link_tag:
+                break
+            card = card.parent
+            levels += 1
             
-        if not card: continue
-
-        link_tag = card.find('a', href=True)
-        link = link_tag['href'] if link_tag else "N/A"
+        if not link_tag: 
+            continue
+            
+        link = link_tag['href']
         
-        if link == "N/A": continue
-        
+        if link == "N/A" or link == "": 
+            continue
+            
         current_active_urls.append(link)
 
-        # SE È NUOVO
+        # SE IL BANDO È NUOVO PER IL BOT
         if link not in history:
+            # Lo aggiungiamo subito alla memoria locale del ciclo
+            history.append(link) 
+            
             title_tag = card.find(['h3', 'h4', 'h5', 'h6'])
             title = title_tag.get_text(strip=True) if title_tag else "Nuovo Bando"
             if title == "Nuovo Bando":
@@ -84,10 +97,9 @@ def check_lum():
 
             print(f"🚀 NUOVO BANDO RILEVATO: {title}")
             
-            # --- FIX FUSO ORARIO (ROME) ---
-            utc_now = datetime.now(pytz.utc) # Prende l'ora UTC del server
-            rome_tz = pytz.timezone('Europe/Rome') # Definisce il fuso orario di Roma
-            rome_now = utc_now.astimezone(rome_tz) # Converte
+            utc_now = datetime.now(pytz.utc) 
+            rome_tz = pytz.timezone('Europe/Rome') 
+            rome_now = utc_now.astimezone(rome_tz) 
             now_str = rome_now.strftime("%d/%m/%Y alle %H:%M")
             
             msg = (
@@ -100,11 +112,10 @@ def check_lum():
         else:
             print(f" -> Già in memoria: {link}")
 
-    if set(current_active_urls) != set(history):
-        save_history(current_active_urls)
-        print("[*] Database aggiornato.")
-    else:
-        print("[*] Nessuna variazione.")
+    # Allinea perfettamente la memoria del bot con quello che c'è REALMENTE sul sito.
+    # Quando l'università cancella un bando, il bot lo dimenticherà al prossimo giro.
+    save_history(current_active_urls)
+    print("[*] Controllo terminato. Radar sincronizzato.")
 
 if __name__ == "__main__":
     check_lum()
