@@ -10,7 +10,7 @@ import pytz
 URL = "https://management.lum.it/bandi-e-avvisi/"
 HISTORY_FILE = "history.json"
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
 }
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -44,7 +44,7 @@ def save_history(data):
         json.dump(list(set(data)), f, indent=4)
 
 def check_lum():
-    print(f"[*] Avvio scansione LUM Sniper su: {URL}")
+    print(f"[*] Avvio scansione LUM Sniper (Focus: Master e Formazione) su: {URL}")
     
     try:
         response = requests.get(URL, headers=HEADERS, timeout=20)
@@ -55,85 +55,63 @@ def check_lum():
 
     soup = BeautifulSoup(response.text, 'html.parser')
     
-    # Cattura sia la classe specifica, sia qualunque tag che contenga esplicitamente "Attivo"
-    active_tags = soup.find_all('span', class_='status-active')
-    for general_tag in soup.find_all(['span', 'div', 'p', 'h5']):
-        if general_tag.get_text(strip=True).lower() == 'attivo' and general_tag not in active_tags:
-            active_tags.append(general_tag)
+    # RADAR VISIVO: Cerca ovunque la parola "Attivo" (ignorando maiuscole/minuscole)
+    # Copre span, div, p, h3, h4, h5. Impossibile che sfugga.
+    active_badges = soup.find_all(lambda tag: tag.name in ['span', 'div', 'p', 'h4', 'h5', 'h6', 'b', 'strong'] and tag.get_text(strip=True).lower() == 'attivo')
     
     current_active_urls = []
     history = load_history()
 
-    print(f"[*] Trovati {len(active_tags)} indicatori di attività. Analisi dei blocchi...")
+    print(f"[*] Trovati {len(active_badges)} indicatori di attività. Filtraggio in corso...")
 
-    for tag in active_tags:
-        card = tag.parent
-        all_links = []
-        title = "Nuovo Bando"
-        
-        # RISALITA PROFONDA: Raccogliamo TUTTI i link della card per evitare i link-trappola di layout
-        for _ in range(7):
-            if not card:
+    for badge in active_badges:
+        card = badge
+        # Risalita per incapsulare l'intero blocco dell'annuncio
+        for _ in range(6):
+            if card.parent:
+                card = card.parent
+            else:
                 break
-            for a in card.find_all('a', href=True):
-                href = a['href'].strip()
-                # Elimina i link spazzatura che ingannavano la memoria del bot
-                if (href and 
-                    href != URL and 
-                    not href.endswith('#') and 
-                    'facebook' not in href and 
-                    'linkedin' not in href and 
-                    'twitter' not in href and 
-                    'mailto:' not in href):
-                    if href not in all_links:
-                        all_links.append(href)
-            
-            title_tag = card.find(['h3', 'h4', 'h5', 'h6'])
-            if title_tag and title == "Nuovo Bando":
-                title = title_tag.get_text(strip=True)
-            
-            card = card.parent
-
-        if not all_links: 
-            continue
-            
-        # SELEZIONE CHIRURGICA: Cerca il link che porta al bando/master vero e proprio
-        best_link = None
-        for l in all_links:
-            if '/bando/' in l or '/master/' in l or '/corso/' in l:
-                best_link = l
-                break
-        if not best_link:
-            best_link = all_links[0]
-            
-        current_active_urls.append(best_link)
-
-        # --- FILTRO DI ESCLUSIONE JOB PLACEMENT ---
-        lowercase_link = best_link.lower()
-        lowercase_title = title.lower()
+                
+        # Estrai titolo
+        title_tag = card.find(['h3', 'h4', 'h5', 'h6', 'h2'])
+        title = title_tag.get_text(strip=True) if title_tag else "Nuovo Bando LUM"
         
-        is_job_placement = (
-            'job-placement' in lowercase_link or 
-            'offerta-di-lavoro' in lowercase_link or 
-            'lavoro' in lowercase_link or
-            'ricerca di' in lowercase_title or
-            'cercasi' in lowercase_title or
-            'assunzione' in lowercase_title
-        )
-        # Protezione per evitare di scartare per errore Master con nomi particolari
-        is_academic_training = ('master' in lowercase_title or 'cyber' in lowercase_title or 'executive' in lowercase_title or 'program' in lowercase_title)
+        # Estrai tutti i link
+        links = card.find_all('a', href=True)
+        valid_link = None
         
-        if is_job_placement and not is_academic_training:
-            print(f"🚯 Saltata offerta Job Placement: {title}")
+        for a in links:
+            href = a['href'].strip()
+            # Ignora link spazzatura (social, mail, link alla pagina stessa)
+            if href and href != URL and not href.endswith('#') and 'mailto:' not in href and 'facebook' not in href and 'linkedin' not in href:
+                valid_link = href
+                # Se è palesemente un bando/master, smettiamo di cercare altri link in questa card
+                if any(kw in href.lower() for kw in ['/bando/', '/master/', '/corso/', '/executive/']):
+                    break 
+
+        if not valid_link:
             continue
 
-        # SE IL BANDO È NUOVO
-        if best_link not in history:
-            history.append(best_link) 
-            
-            if title == "Nuovo Bando" and card:
-                 title = " ".join(card.get_text().split())[:60] + "..."
+        # --- LA GHIGLIOTTINA (Addio Job Placement) ---
+        testo_analisi = (title + " " + valid_link).lower()
+        parole_spazzatura = ['job-placement', 'job placement', 'offerta di lavoro', 'assunzione', 'cercasi', 'career']
+        
+        # Se trova una parola legata al Job Placement, uccide l'annuncio...
+        is_job = any(parola in testo_analisi for parola in parole_spazzatura)
+        # ... A MENO CHE non sia palesemente un master (Es: "Master in diritto del Lavoro")
+        is_safe = any(salvagente in testo_analisi for salvagente in ['master', 'executive', 'corso', 'bando', 'program'])
+        
+        if is_job and not is_safe:
+            print(f"🚯 ELIMINATO (Job Placement ignoto): {title}")
+            continue
 
+        # SE PASSA TUTTI I FILTRI ED È NUOVO
+        current_active_urls.append(valid_link)
+
+        if valid_link not in history:
+            history.append(valid_link) 
+            
             print(f"🚀 NUOVA OPPORTUNITÀ RILEVATA: {title}")
             
             utc_now = datetime.now(pytz.utc) 
@@ -142,17 +120,16 @@ def check_lum():
             now_str = rome_now.strftime("%d/%m/%Y alle %H:%M")
             
             msg = (
-                f"🎯 <b>NUOVA FORMAZIONE LUM ATTIVA!</b>\n\n"
+                f"🎯 <b>NUOVO CORSO/MASTER LUM ATTIVO!</b>\n\n"
                 f"📝 <b>{title}</b>\n"
-                f"🔗 <a href='{best_link}'>Clicca qui per il bando diretto</a>\n\n"
+                f"🔗 <a href='{valid_link}'>Clicca qui per il bando</a>\n\n"
                 f"<i>Rilevato il: {now_str}</i>"
             )
             send_telegram_alert(msg)
-        else:
-            print(f" -> Già in memoria: {best_link}")
 
+    # Sincronizza il radar
     save_history(current_active_urls)
-    print("[*] Controllo terminato. Sincronizzazione completata.")
+    print("[*] Controllo terminato. Radar sincronizzato sui soli Corsi/Master.")
 
 if __name__ == "__main__":
     check_lum()
