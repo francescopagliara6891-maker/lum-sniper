@@ -2,9 +2,11 @@ name: LUM Sniper Bot
 
 on:
   schedule:
-    # Esegue ogni 30 minuti
     - cron: '*/30 * * * *'
-  workflow_dispatch: # Ti permette di avviarlo a mano se vuoi controllare SUBITO
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   check-lum:
@@ -12,10 +14,10 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
@@ -27,15 +29,14 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        DATE_NOW: $(date +'%d-%m-%Y %H:%M')
       run: python main.py
 
     - name: Commit and Push History
-      # Questo step salva il file history.json se è cambiato
       run: |
         git config --global user.name "LUM Sniper Bot"
         git config --global user.email "bot@github.com"
         git add history.json
-        # Il commit fallisce se non ci sono modifiche, quindi usiamo "|| exit 0" per non rompere il workflow
-        git commit -m "Aggiornamento storico bandi" || exit 0
+        date > keep_alive.txt
+        git add keep_alive.txt
+        git commit -m "Scansione periodica e keep-alive" || exit 0
         git push
