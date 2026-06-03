@@ -40,7 +40,6 @@ def load_history():
     return []
 
 def save_history(data):
-    # Salviamo i link attivi, rimuovendo potenziali duplicati
     with open(HISTORY_FILE, "w") as f:
         json.dump(list(set(data)), f, indent=4)
 
@@ -55,47 +54,87 @@ def check_lum():
         sys.exit(1)
 
     soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Cattura sia la classe specifica, sia qualunque tag che contenga esplicitamente "Attivo"
     active_tags = soup.find_all('span', class_='status-active')
+    for general_tag in soup.find_all(['span', 'div', 'p', 'h5']):
+        if general_tag.get_text(strip=True).lower() == 'attivo' and general_tag not in active_tags:
+            active_tags.append(general_tag)
     
     current_active_urls = []
     history = load_history()
 
-    print(f"[*] Trovati {len(active_tags)} bandi attivi totali.")
+    print(f"[*] Trovati {len(active_tags)} indicatori di attività. Analisi dei blocchi...")
 
     for tag in active_tags:
         card = tag.parent
-        link_tag = None
-        levels = 0
+        all_links = []
+        title = "Nuovo Bando"
         
-        # IL MIRINO BLINDATO: Risale la pagina per 6 livelli fino a trovare il link
-        while card and levels < 6:
-            link_tag = card.find('a', href=True)
-            if link_tag:
+        # RISALITA PROFONDA: Raccogliamo TUTTI i link della card per evitare i link-trappola di layout
+        for _ in range(7):
+            if not card:
                 break
-            card = card.parent
-            levels += 1
-            
-        if not link_tag: 
-            continue
-            
-        link = link_tag['href']
-        
-        if link == "N/A" or link == "": 
-            continue
-            
-        current_active_urls.append(link)
-
-        # SE IL BANDO È NUOVO PER IL BOT
-        if link not in history:
-            # Lo aggiungiamo subito alla memoria locale del ciclo
-            history.append(link) 
+            for a in card.find_all('a', href=True):
+                href = a['href'].strip()
+                # Elimina i link spazzatura che ingannavano la memoria del bot
+                if (href and 
+                    href != URL and 
+                    not href.endswith('#') and 
+                    'facebook' not in href and 
+                    'linkedin' not in href and 
+                    'twitter' not in href and 
+                    'mailto:' not in href):
+                    if href not in all_links:
+                        all_links.append(href)
             
             title_tag = card.find(['h3', 'h4', 'h5', 'h6'])
-            title = title_tag.get_text(strip=True) if title_tag else "Nuovo Bando"
-            if title == "Nuovo Bando":
+            if title_tag and title == "Nuovo Bando":
+                title = title_tag.get_text(strip=True)
+            
+            card = card.parent
+
+        if not all_links: 
+            continue
+            
+        # SELEZIONE CHIRURGICA: Cerca il link che porta al bando/master vero e proprio
+        best_link = None
+        for l in all_links:
+            if '/bando/' in l or '/master/' in l or '/corso/' in l:
+                best_link = l
+                break
+        if not best_link:
+            best_link = all_links[0]
+            
+        current_active_urls.append(best_link)
+
+        # --- FILTRO DI ESCLUSIONE JOB PLACEMENT ---
+        lowercase_link = best_link.lower()
+        lowercase_title = title.lower()
+        
+        is_job_placement = (
+            'job-placement' in lowercase_link or 
+            'offerta-di-lavoro' in lowercase_link or 
+            'lavoro' in lowercase_link or
+            'ricerca di' in lowercase_title or
+            'cercasi' in lowercase_title or
+            'assunzione' in lowercase_title
+        )
+        # Protezione per evitare di scartare per errore Master con nomi particolari
+        is_academic_training = ('master' in lowercase_title or 'cyber' in lowercase_title or 'executive' in lowercase_title or 'program' in lowercase_title)
+        
+        if is_job_placement and not is_academic_training:
+            print(f"🚯 Saltata offerta Job Placement: {title}")
+            continue
+
+        # SE IL BANDO È NUOVO
+        if best_link not in history:
+            history.append(best_link) 
+            
+            if title == "Nuovo Bando" and card:
                  title = " ".join(card.get_text().split())[:60] + "..."
 
-            print(f"🚀 NUOVO BANDO RILEVATO: {title}")
+            print(f"🚀 NUOVA OPPORTUNITÀ RILEVATA: {title}")
             
             utc_now = datetime.now(pytz.utc) 
             rome_tz = pytz.timezone('Europe/Rome') 
@@ -103,19 +142,17 @@ def check_lum():
             now_str = rome_now.strftime("%d/%m/%Y alle %H:%M")
             
             msg = (
-                f"🎯 <b>NUOVO BANDO LUM ATTIVO!</b>\n\n"
+                f"🎯 <b>NUOVA FORMAZIONE LUM ATTIVA!</b>\n\n"
                 f"📝 <b>{title}</b>\n"
-                f"🔗 <a href='{link}'>Clicca qui per candidarti subito</a>\n\n"
+                f"🔗 <a href='{best_link}'>Clicca qui per il bando diretto</a>\n\n"
                 f"<i>Rilevato il: {now_str}</i>"
             )
             send_telegram_alert(msg)
         else:
-            print(f" -> Già in memoria: {link}")
+            print(f" -> Già in memoria: {best_link}")
 
-    # Allinea perfettamente la memoria del bot con quello che c'è REALMENTE sul sito.
-    # Quando l'università cancella un bando, il bot lo dimenticherà al prossimo giro.
     save_history(current_active_urls)
-    print("[*] Controllo terminato. Radar sincronizzato.")
+    print("[*] Controllo terminato. Sincronizzazione completata.")
 
 if __name__ == "__main__":
     check_lum()
