@@ -4,44 +4,23 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import pytz
-from urllib.parse import urljoin # Fondamentale per i siti che usano link relativi (es. /bando-123)
+from urllib.parse import urljoin
 
 # ---------------------------------------------------------
-# 🎯 CONFIGURAZIONE DEL CECCHINO (OMNI-SNIPER)
+# 🎯 CONFIGURAZIONE
 # ---------------------------------------------------------
 HISTORY_FILE = "history.json"
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 }
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 🌐 L'ARSENALE DEI BERSAGLI (Aggiungi qui qualsiasi sito vuoi!)
-TARGETS = {
-    "LUM_Avvisi": "https://management.lum.it/bandi-e-avvisi/",
-    "LUM_Jobs": "https://www.lum.it/job-opportunities/",
-    "UNIBA_AltaForm": "https://www.uniba.it/it/didattica/corsi-universitari-di-formazione-finalizzata/corsi-e-progetti-di-alta-formazione",
-    "UNIBA_Albo": "https://www.uniba.it/it/ateneo/albo-pretorio",
-    "UNIBA_Jonico": "https://www.uniba.it/it/ricerca/dipartimenti/sistemi-giuridici-ed-economici", # Sede dei master su migrazioni/antimafia
-    "Sistema_Puglia": "https://www.sistema.puglia.it/SistemaPuglia/formazione",
-    "ARESS_Puglia": "https://www.sanita.puglia.it/web/aress/news-in-primo-piano",
-    "Regione_Puglia": "https://por.regione.puglia.it/it/bandi"
-}
-
-# 🔫 I GRILLETTI: Parole che fanno scattare la notifica
-TRIGGER_WORDS = [
-    "short master", "master", "alta formazione", "borsa di studio", 
-    "gratuito", "finanziato", "fad ", "online", "da remoto", "e-learning",
-    "pass laureati", "ritorno al futuro", "patti territoriali",
-    "migrazioni", "mediazione", "cyber security", "inps", "inclusione"
-]
-
-# 🔕 I SILENZIATORI: Scarta graduatorie, esiti e roba vecchia
-KILL_WORDS = [
-    "scaduto", "graduatoria", "esit", "commissione", "convocazione", 
-    "aggiudicazione", "rinvio", "errata corrige"
-]
+# Ottieni l'anno corrente per filtrare le cianfrusaglie
+CURRENT_YEAR = str(datetime.now(pytz.utc).year)       # "2026"
+NEXT_YEAR = str(datetime.now(pytz.utc).year + 1)      # "2027"
+ACADEMIC_YEAR = f"{CURRENT_YEAR}/{NEXT_YEAR}"         # "2026/2027"
 
 def send_telegram_alert(message):
     if not TG_TOKEN or not TG_CHAT_ID: return
@@ -53,9 +32,7 @@ def send_telegram_alert(message):
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
-            with open(HISTORY_FILE, "r") as f:
-                data = json.load(f)
-                if isinstance(data, list): return data
+            with open(HISTORY_FILE, "r") as f: return json.load(f)
         except: pass
     return []
 
@@ -66,68 +43,131 @@ def save_history(data):
 def get_rome_time():
     return datetime.now(pytz.utc).astimezone(pytz.timezone('Europe/Rome')).strftime("%d/%m/%Y alle %H:%M")
 
-def universal_sniper_engine(history):
-    print("[*] Avvio OMNI-SNIPER. Inizializzazione motore universale...")
-    now_str = get_rome_time()
-    nuovi_link_trovati = []
+# ---------------------------------------------------------
+# 🔬 MOTORE 1: IL BISTURI (Solo per LUM) - La tua logica originale
+# ---------------------------------------------------------
+def check_lum_surgical(history):
+    print("[*] Esecuzione Bisturi su LUM...")
+    nuovi_link = []
+    
+    # 1. LUM MASTER E CORSI
+    try:
+        res = requests.get("https://management.lum.it/bandi-e-avvisi/", headers=HEADERS, timeout=20)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # Cerca solo i badge "Attivo"
+        active_badges = soup.find_all(lambda tag: tag.name in ['span', 'div', 'p', 'h4', 'h5', 'h6', 'b', 'strong'] and tag.get_text(strip=True).lower() == 'attivo')
+        
+        for badge in active_badges:
+            card = badge
+            for _ in range(6):
+                if card.parent: card = card.parent
+                else: break
+                    
+            title_tag = card.find(['h3', 'h4', 'h5', 'h6', 'h2'])
+            title = title_tag.get_text(strip=True) if title_tag else "Bando LUM"
+            
+            links = card.find_all('a', href=True)
+            valid_link = next((a['href'].strip() for a in links if a['href'].strip() != "https://management.lum.it/bandi-e-avvisi/" and not a['href'].startswith('#')), None)
+            
+            if not valid_link: continue
 
-    for site_name, base_url in TARGETS.items():
-        print(f"[*] Puntamento su: {site_name} -> {base_url}")
+            # La Ghigliottina
+            testo = (title + " " + valid_link).lower()
+            if any(p in testo for p in ['job-placement', 'job placement']) and not any(s in testo for s in ['master', 'executive']):
+                continue
+
+            if valid_link not in history:
+                nuovi_link.append(valid_link)
+                msg = f"🎯 <b>NUOVO BANDO LUM ATTIVO!</b>\n\n📝 <b>{title}</b>\n🔗 <a href='{valid_link}'>Apri Bando</a>\n\n<i>Rilevato il: {get_rome_time()}</i>"
+                send_telegram_alert(msg)
+                
+    except Exception as e: print(f"[!] Errore LUM Master: {e}")
+
+    # 2. LUM JOBS
+    try:
+        res = requests.get("https://www.lum.it/job-opportunities/", headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        for span in soup.find_all('span'):
+            if "aperto" in span.get_text(strip=True).lower():
+                card = span.find_parent(['div', 'article', 'li'])
+                if card and card.find('a', href=True):
+                    link = urljoin("https://www.lum.it", card.find('a')['href'])
+                    if link not in history and link not in nuovi_link:
+                        nuovi_link.append(link)
+                        msg = f"💼 <b>[LUM] NUOVA OFFERTA DI LAVORO!</b>\n🔗 <a href='{link}'>Vedi offerta</a>\n\n<i>Rilevata il: {get_rome_time()}</i>"
+                        send_telegram_alert(msg)
+    except Exception as e: print(f"[!] Errore LUM Jobs: {e}")
+
+    return nuovi_link
+
+
+# ---------------------------------------------------------
+# 📡 MOTORE 2: IL RADAR (Con Filtro Temporale 2026/2027)
+# ---------------------------------------------------------
+def check_radar_targets(history):
+    print("[*] Esecuzione Radar Temporale...")
+    
+    TARGETS = {
+        "UNIBA_Formazione": "https://www.uniba.it/it/didattica/corsi-universitari-di-formazione-finalizzata/corsi-e-progetti-di-alta-formazione",
+        "UNIBA_Jonico": "https://www.uniba.it/it/ricerca/dipartimenti/sistemi-giuridici-ed-economici",
+        "Sistema_Puglia": "https://www.sistema.puglia.it/SistemaPuglia/formazione",
+        "Regione_Puglia": "https://por.regione.puglia.it/it/bandi",
+        "ARESS_Puglia": "https://www.sanita.puglia.it/web/aress/news-in-primo-piano"
+    }
+
+    # Le parole che cerchiamo nel titolo del link
+    TRIGGER_WORDS = ["short master", "master", "borsa di studio", "gratuito", "online", "da remoto", "pass laureati", "ritorno al futuro", "migrazioni", "patti territoriali", "cyber"]
+    
+    nuovi_link = []
+
+    for site, url in TARGETS.items():
         try:
-            res = requests.get(base_url, headers=HEADERS, timeout=20)
+            res = requests.get(url, headers=HEADERS, timeout=20)
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # Cattura TUTTI i link della pagina
-            links = soup.find_all('a', href=True)
-            
-            for tag in links:
+            for tag in soup.find_all('a', href=True):
                 testo_link = tag.get_text(strip=True).lower()
-                href_grezzo = tag['href'].strip()
+                href = tag['href'].strip()
+                link_assoluto = urljoin(url, href)
                 
-                # Unisce base_url e href parziale per creare il link assoluto e funzionante
-                link_assoluto = urljoin(base_url, href_grezzo)
-                testo_da_analizzare = f"{testo_link} {link_assoluto}".lower()
-
-                # Ignora ancore, mailto e link spazzatura generici
-                if not href_grezzo or href_grezzo.startswith('#') or 'mailto:' in href_grezzo:
+                # REGOLE DI INGAGGIO RIGIDE:
+                # 1. Il link deve contenere almeno una parola chiave
+                if not any(kw in testo_link for kw in TRIGGER_WORDS):
+                    continue
+                    
+                # 2. DEVE contenere riferimenti all'anno corrente/successivo, oppure parole chiave stringenti come "bando aperto" / "avviso pubblico"
+                if CURRENT_YEAR not in testo_link and NEXT_YEAR not in testo_link and ACADEMIC_YEAR not in testo_link and "aperto" not in testo_link and "avviso" not in testo_link:
                     continue
 
-                # 1. Controlla i silenziatori (se c'è una kill_word, salta al prossimo link)
-                if any(kw in testo_da_analizzare for kw in KILL_WORDS):
+                # 3. Elimina archivi palesi
+                if any(old in testo_link or old in href for old in ["2021", "2022", "2023", "2024", "2025", "archivio", "scadut", "graduatoria"]):
                     continue
 
-                # 2. Controlla i grilletti (o se è il sito Job Placement LUM che va sempre segnalato)
-                is_target = any(kw in testo_da_analizzare for kw in TRIGGER_WORDS)
-                if site_name == "LUM_Jobs" and "aperto" in testo_link: 
-                    is_target = True
-                
-                if is_target:
-                    if link_assoluto not in history and link_assoluto not in nuovi_link_trovati:
-                        nuovi_link_trovati.append(link_assoluto)
-                        titolo_pulito = tag.get_text(strip=True)
-                        if not titolo_pulito: titolo_pulito = "Avviso/Bando (Titolo non testuale)"
-                        
-                        msg = (
-                            f"🎯 <b>SNIPER ALERT: {site_name}</b>\n\n"
-                            f"📝 <b>{titolo_pulito}</b>\n"
-                            f"🔗 <a href='{link_assoluto}'>Apri la pagina</a>\n\n"
-                            f"<i>Rilevato il: {now_str}</i>"
-                        )
-                        send_telegram_alert(msg)
-                        print(f"🚀 COLPO A SEGNO su {site_name}: {titolo_pulito}")
-
+                if link_assoluto not in history and link_assoluto not in nuovi_link:
+                    nuovi_link.append(link_assoluto)
+                    titolo = tag.get_text(strip=True)
+                    msg = f"🎯 <b>SNIPER ALERT: {site}</b>\n\n📝 <b>{titolo}</b>\n🔗 <a href='{link_assoluto}'>Apri la pagina</a>\n\n<i>Rilevato il: {get_rome_time()}</i>"
+                    send_telegram_alert(msg)
+                    
         except Exception as e:
-            print(f"[!] Target {site_name} fuori portata o in errore: {e}")
+            print(f"[!] Errore su {site}: {e}")
 
-    return nuovi_link_trovati
+    return nuovi_link
 
+# ---------------------------------------------------------
+# 🚀 ESECUZIONE
+# ---------------------------------------------------------
 if __name__ == "__main__":
     storico_attuale = load_history()
-    nuove_scoperte = universal_sniper_engine(storico_attuale)
     
-    if nuove_scoperte:
-        storico_aggiornato = list(set(storico_attuale + nuove_scoperte))
-        save_history(storico_aggiornato)
-        print(f"[*] Database aggiornato. {len(nuove_scoperte)} nuovi target colpiti.")
+    nuovi_lum = check_lum_surgical(storico_attuale)
+    nuovi_radar = check_radar_targets(storico_attuale)
+    
+    tutti_i_nuovi = nuovi_lum + nuovi_radar
+    
+    if tutti_i_nuovi:
+        save_history(storico_attuale + tutti_i_nuovi)
+        print(f"[*] Database aggiornato con {len(tutti_i_nuovi)} nuovi elementi.")
     else:
-        print("[*] Nessun nuovo bersaglio. Mimetizzazione in corso...")
+        print("[*] Nessun nuovo bersaglio. Tutto tranquillo.")
